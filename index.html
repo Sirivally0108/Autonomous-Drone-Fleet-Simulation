@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Autonomous Drone Fleet Simulation</title>
+
+<style>
+body {
+  margin: 0;
+  background: #0f172a;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+
+h2 {
+  text-align: center;
+  color: #38bdf8;
+  margin: 10px 0;
+}
+
+#container {
+  display: flex;
+}
+
+canvas {
+  background: #020617;
+  border: 2px solid #38bdf8;
+  margin: 10px;
+}
+
+#metrics {
+  width: 300px;
+  background: #020617;
+  border-left: 2px solid #38bdf8;
+  padding: 15px;
+  font-size: 14px;
+}
+
+#metrics h3 {
+  color: #22c55e;
+  text-align: center;
+}
+
+hr {
+  border: 1px solid #1e293b;
+}
+</style>
+</head>
+
+<body>
+
+<h2>Real-Time Autonomous Drone Fleet Simulation</h2>
+
+<div id="container">
+
+<canvas id="simCanvas" width="780" height="480"></canvas>
+
+<div id="metrics">
+  <h3>Performance Metrics</h3>
+  <p>FPS: <span id="fps"></span></p>
+
+  <p>Total Drones: <span id="droneCount"></span></p>
+  <p>Active Targets: <span id="targetCount"></span></p>
+  <p>Collision Events: <span id="collisionCount"></span></p>
+  <p>Average Speed: <span id="avgSpeed"></span></p>
+  <p>Simulation Time: <span id="simTime"></span> s</p>
+
+  <hr>
+
+  <b>Task Assignment</b>
+  <div id="taskInfo"></div>
+</div>
+
+</div>
+<script>
+
+const canvas = document.getElementById("simCanvas");
+const ctx = canvas.getContext("2d");
+let lastTime = performance.now();
+let fps = 0;
+
+const SPEED = 1.2;
+const ARRIVAL_RADIUS = 10;
+const SAFE_DISTANCE = 28;
+const HOLD_TIME = 8000;
+
+let simTime = 0;
+let collisionCount = 0;
+
+// ---------------- TARGETS ----------------
+let targets = [
+  { id: 1, x: 720, y: 60, active: null, pulse: 0 },
+  { id: 2, x: 380, y: 440, active: null, pulse: 0 }
+];
+
+//------------------OBSTACLES----------------
+let obstacles = [
+  { x: 300, y: 120, r: 10 },
+  { x: 450, y: 300, r: 12 },
+  { x: 220, y: 400, r: 8 }
+];
+
+function drawObstacles() {
+  ctx.fillStyle = "red";
+  obstacles.forEach(o => {
+    ctx.beginPath();
+    ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+
+
+// ---------------- STATES ----------------
+const STATE_MOVE = "MOVE";
+const STATE_HOLD = "HOLD";
+const STATE_PATROL = "PATROL";
+
+// ---------------- DRONE CLASS ----------------
+class Drone {
+  constructor(id, x, y, targetId, task) {
+   this.collisionTimer = 0;
+this.avoidObstacleTimer = 0;
+this.color = "cyan";
+this.taskStatus = "In Progress";
+
+this.patrolStart = null;
+    this.id = id;
+    this.x = x;
+    this.y = y;
+
+    this.prevX = x;
+    this.prevY = y;
+    this.prevVx = 0;
+    this.prevVy = 0;
+
+    this.vx = (Math.random() < 0.5 ? -1 : 1) * SPEED;
+    this.vy = (Math.random() < 0.5 ? -1 : 1) * SPEED;
+
+    this.vx_calc = 0;
+    this.vy_calc = 0;
+    this.ax = 0;
+    this.ay = 0;
+
+    this.target = targets.find(t => t.id === targetId);
+    this.state = STATE_MOVE;
+    this.task = task;
+    this.color = "cyan";
+    this.holdStart = null;
+
+  }
+
+  moveTowards(tx, ty) {
+    let dx = tx - this.x;
+    let dy = ty - this.y;
+    let d = Math.hypot(dx, dy);
+    if (d < ARRIVAL_RADIUS) return true;
+    this.x += (dx / d) * SPEED;
+    this.y += (dy / d) * SPEED;
+    return false;
+  }
+
+  linearMove() {
+    this.x += this.vx;
+    this.y += this.vy;
+
+    if (this.x < 15 || this.x > canvas.width - 15) this.vx *= -1;
+    if (this.y < 15 || this.y > canvas.height - 15) this.vy *= -1;
+  }
+
+  update() {
+    if (this.state === STATE_MOVE) {
+
+  // Someone else is working → patrol & wait
+  if (this.target.active !== null && this.target.active !== this.id) {
+    this.state = STATE_PATROL;
+    return;
+  }
+
+  // Move to target
+  if (this.moveTowards(this.target.x, this.target.y)) {
+    this.target.active = this.id;
+    this.state = STATE_HOLD;
+    this.holdStart = Date.now();
+  }
+}
+else if (this.state === STATE_HOLD) {
+  this.taskStatus = "Executing Task";
+
+  if (Date.now() - this.holdStart >= HOLD_TIME) {
+    this.taskStatus = "Completed";
+
+    // Release target
+    this.target.active = null;
+
+    // After task → patrol
+    this.state = STATE_PATROL;
+  }
+}
+
+    else if (this.state === STATE_PATROL) {
+
+  // Start patrol timer once
+  if (!this.patrolStart) {
+    this.patrolStart = Date.now();
+  }
+
+  this.linearMove(); // keep moving
+
+  // After 10 seconds of patrol, try again
+  if (Date.now() - this.patrolStart > 10000) {
+    this.patrolStart = null;
+
+    // Try to re-acquire target
+    if (this.target.active === null) {
+      this.state = STATE_MOVE;
+    }
+  }
+}
+
+
+    // --- velocity & acceleration ---
+    this.vx_calc = this.x - this.prevX;
+    this.vy_calc = this.y - this.prevY;
+    this.ax = this.vx_calc - this.prevVx;
+    this.ay = this.vy_calc - this.prevVy;
+
+    this.prevX = this.x;
+    this.prevY = this.y;
+    this.prevVx = this.vx_calc;
+    this.prevVy = this.vy_calc;
+
+  }
+
+draw() {
+  ctx.save();
+  ctx.translate(this.x, this.y);
+
+  // Rotate drone in movement direction
+  ctx.rotate(Math.atan2(this.vy_calc, this.vx_calc));
+if (this.collisionTimer > 0) {
+  ctx.beginPath();
+  ctx.arc(this.x, this.y, SAFE_DISTANCE, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(255,0,0,0.3)";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+  // ===== DRONE BODY (small triangle) =====
+  ctx.beginPath();
+  ctx.moveTo(8, 0);        // nose
+  ctx.lineTo(-6, -4);
+  ctx.lineTo(-6, 4);
+  ctx.closePath();
+  ctx.fillStyle = this.color;  // cyan like image
+  ctx.fill();
+
+  // ===== LEFT WING =====
+  ctx.strokeStyle = "#67e8f9";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-2, -2);
+  ctx.lineTo(-10, -8);
+  ctx.stroke();
+
+  // ===== RIGHT WING =====
+  ctx.beginPath();
+  ctx.moveTo(-2, 2);
+  ctx.lineTo(-10, 8);
+  ctx.stroke();
+
+  ctx.restore();
+
+// ===== TELEMETRY BOX (TRANSPARENT) =====
+ctx.fillStyle = "rgba(15, 23, 42, 0.55)"; // ← transparency added
+ctx.fillRect(this.x + 10, this.y + 6, 155, 105);
+
+// Optional subtle border
+ctx.strokeStyle = "rgba(56, 189, 248, 0.4)";
+ctx.strokeRect(this.x + 10, this.y + 6, 155, 105);
+
+// Text
+ctx.fillStyle = "#e0f2fe";
+ctx.font = "10px Arial";
+ctx.fillText(`D${this.id}`, this.x + 14, this.y + 18);
+ctx.fillText(`x: ${this.x.toFixed(1)}`, this.x + 14, this.y + 30);
+ctx.fillText(`y: ${this.y.toFixed(1)}`, this.x + 14, this.y + 42);
+ctx.fillText(`vx: ${this.vx_calc.toFixed(2)}`, this.x + 14, this.y + 54);
+ctx.fillText(`vy: ${this.vy_calc.toFixed(2)}`, this.x + 14, this.y + 66);
+ctx.fillText(`ax: ${this.ax.toFixed(2)}`, this.x + 14, this.y + 78);
+ctx.fillText(`ay: ${this.ay.toFixed(2)}`, this.x + 14, this.y + 90);
+
+}
+
+}
+
+// ---------------- INIT DRONES ----------------
+let drones = [
+  new Drone(1, 80, 120, 1, "Traffic Monitoring"),
+  new Drone(2, 160, 360, 1, "Path Verification"),
+  new Drone(3, 300, 220, 2, "Obstacle Scanning"),
+  new Drone(4, 420, 90, 2, "Surveillance"),
+  new Drone(5, 600, 180, 1, "Area Mapping"),
+  new Drone(6, 100, 420, 2, "Signal Relay")
+];
+
+
+// ---------------- COLLISION PREVENTION ----------------
+function preventCollisions() {
+
+  // ---- DRONE TO DRONE ----
+  for (let i = 0; i < drones.length; i++) {
+    for (let j = i + 1; j < drones.length; j++) {
+      let a = drones[i];
+      let b = drones[j];
+
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      let dist = Math.hypot(dx, dy);
+
+      if (dist < SAFE_DISTANCE) {
+        collisionCount++;
+
+        let nx = dx / dist;
+        let ny = dy / dist;
+
+        let push = 2.5;
+        a.x -= nx * push;
+        a.y -= ny * push;
+        b.x += nx * push;
+        b.y += ny * push;
+
+        // Strong visible direction change
+        a.vx = -nx * SPEED;
+        a.vy = -ny * SPEED;
+        b.vx = nx * SPEED;
+        b.vy = ny * SPEED;
+
+        // 🔴 trigger visual state
+        a.collisionTimer = 20;
+b.collisionTimer = 20;
+
+      }
+    }
+  }
+
+  // ---- DRONE TO OBSTACLE ----
+  drones.forEach(d => {
+    obstacles.forEach(o => {
+      let dx = d.x - o.x;
+      let dy = d.y - o.y;
+      let dist = Math.hypot(dx, dy);
+
+      if (dist < o.r + SAFE_DISTANCE) {
+        let nx = dx / dist;
+        let ny = dy / dist;
+
+        d.x += nx * 2;
+        d.y += ny * 2;
+
+        d.vx = nx * SPEED;
+        d.vy = ny * SPEED;
+
+        d.avoidObstacleTimer = 20; // 🟠
+      }
+    });
+  });
+}
+function updateDroneColors() {
+  drones.forEach(d => {
+    if (d.collisionTimer > 0) {
+      d.color = "red";
+      d.collisionTimer--;
+    }
+    else if (d.avoidObstacleTimer > 0) {
+      d.color = "orange";
+      d.avoidObstacleTimer--;
+    }
+    else {
+      d.color = "cyan";
+    }
+  });
+}
+
+
+// ---------------- TARGET DRAW ----------------
+function drawTargets() {
+  targets.forEach(t => {
+    t.pulse += 0.05;
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, 14 + Math.sin(t.pulse) * 3, 0, Math.PI * 2);
+    ctx.strokeStyle = t.claimedBy ? "#22c55e" : "#38bdf8";
+    ctx.stroke();
+  });
+}
+
+// ---------------- METRICS UPDATE ----------------
+function updateMetrics() {
+  document.getElementById("droneCount").innerText = drones.length;
+  document.getElementById("targetCount").innerText = targets.length;
+  document.getElementById("collisionCount").innerText = collisionCount;
+
+  let avgSpeed = drones.reduce((s,d)=>s+Math.hypot(d.vx_calc,d.vy_calc),0)/drones.length;
+  document.getElementById("avgSpeed").innerText = avgSpeed.toFixed(2);
+  document.getElementById("simTime").innerText = simTime++;
+  document.getElementById("fps").innerText = fps.toFixed(1);
+
+  let info = "";
+drones.forEach(d => {
+  info += `Drone ${d.id}: ${d.task}<br>
+           Status: <b>${d.taskStatus}</b><br><br>`;
+});
+document.getElementById("taskInfo").innerHTML = info;
+
+}
+
+// ---------------- MAIN LOOP ----------------
+function update() {
+  drones.forEach(d => d.update());
+}
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  drawTargets();
+  drawObstacles();
+
+  drones.forEach(d => d.draw());
+}
+
+function animate() {
+  const now = performance.now();
+  const delta = now - lastTime;
+
+  if (delta > 0) {
+    fps = Math.round(1000 / delta);
+  }
+
+  lastTime = now;
+
+  update();
+  preventCollisions();
+  updateDroneColors();
+  draw();
+  updateMetrics();
+
+  requestAnimationFrame(animate);
+}
+
+
+
+animate();
+</script>
+
+</body>
+</html>
